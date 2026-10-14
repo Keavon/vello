@@ -13,8 +13,8 @@ use crate::draw::{EXTERNAL_TEXTURE_SLOT_COUNT, ExternalTextureBindings, External
 use crate::render::common::IMAGE_PADDING;
 use crate::util::RangedSlice;
 use crate::{
-    ClearSettings, GpuStrip, LayersConfig, RenderError, RenderSettings, RenderSize, Resources,
-    TargetInit,
+    ClearSettings, GpuStrip, LayersConfig, RenderError, RenderSettings, RenderSize,
+    ResourceTexture, Resources, TargetInit,
     blend::{BlendStrip, GpuBlendInstance},
     copy::GpuCopyInstance,
     filter::{FilterContext, FilterInstanceData, FilterPassPlan},
@@ -450,11 +450,17 @@ impl Renderer {
             current_allocations,
             self.layers_config.max_textures,
         )?;
-        self.programs
-            .prepare_intermediate_textures(device, &schedule);
         // TODO: For the time being, we upload the entire alpha buffer as one big chunk. As a future
         // refinement, we could have a bounded alpha buffer, and break draws when the alpha
-        // buffer fills.
+        // buffer fills. Until then, a scene with more data than fits is reported to the caller,
+        // which can split it into smaller renders.
+        self.programs.check_resource_capacity(
+            scene.strip_storage.borrow().alphas.len(),
+            &self.paint_idxs,
+            &self.gradient_cache,
+        )?;
+        self.programs
+            .prepare_intermediate_textures(device, &schedule);
         self.programs.prepare(
             device,
             queue,
@@ -2198,6 +2204,47 @@ impl Programs {
                     .create_view(&TextureViewDescriptor::default()),
             );
         }
+    }
+
+    /// Check that a render's data fits in the resource textures, which can't grow taller than
+    /// they are wide.
+    fn check_resource_capacity(
+        &self,
+        alphas_len: usize,
+        paint_idxs: &[u32],
+        gradient_cache: &GradientRampCache,
+    ) -> Result<(), RenderError> {
+        let max_height = self.resources.resource_texture_dimension_2d;
+        let check = |resource, required_height: u32| {
+            if required_height > max_height {
+                Err(RenderError::ResourceTextureOverflow {
+                    resource,
+                    required_height,
+                    max_height,
+                })
+            } else {
+                Ok(())
+            }
+        };
+
+        // There are 16 1-byte alpha values per texel.
+        let alphas_len = u32::try_from(alphas_len).unwrap_or(u32::MAX);
+        check(
+            ResourceTexture::Alphas,
+            alphas_len.div_ceil(max_height << 4),
+        )?;
+
+        let paint_texels = paint_idxs.last().copied().unwrap_or(0);
+        check(
+            ResourceTexture::EncodedPaints,
+            paint_texels.div_ceil(max_height),
+        )?;
+
+        let gradient_texels = gradient_cache.luts_size() as u32 / GRADIENT_BYTES_PER_TEXEL;
+        check(
+            ResourceTexture::Gradients,
+            gradient_texels.div_ceil(max_height),
+        )
     }
 
     /// Update the alpha texture size if needed.
