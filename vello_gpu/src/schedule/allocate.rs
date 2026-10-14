@@ -122,8 +122,10 @@ impl LayerAllocationRequest {
             RecordedLayerKind::Filter { .. } => FILTER_ATLAS_PADDING,
         };
 
+        // A layer whose content covers no pixels still needs a region, and the atlas
+        // allocator can't give out a zero-sized one.
         let region = RegionProps {
-            size: SizeU16::from_wh(bbox.width(), bbox.height()),
+            size: SizeU16::from_wh(bbox.width().max(1), bbox.height().max(1)),
             padding,
         };
 
