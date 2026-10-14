@@ -6,13 +6,12 @@
 use alloc::vec::Vec;
 use hashbrown::HashMap;
 use vello_common::encode::{EncodedGradient, GradientCacheKey};
-use vello_common::fearless_simd::{Level, Simd, dispatch};
 use vello_common::peniko::color::cache_key::CacheKey;
 
 /// Number of bytes per texel in the gradient texture.
-/// Gradient textures use `Rgba8Unorm` format (4 bytes per texel).
+/// Gradient textures use `Rgba32Float` format (16 bytes per texel).
 /// This constant is used to convert between byte offsets and texel indices.
-const BYTES_PER_TEXEL: u32 = 4;
+pub(crate) const BYTES_PER_TEXEL: u32 = 16;
 
 #[derive(Debug)]
 pub(crate) struct GradientRampCache {
@@ -26,8 +25,6 @@ pub(crate) struct GradientRampCache {
     has_changed: bool,
     /// Maximum number of gradient cache entries to retain.
     retained_count: u32,
-    /// SIMD level used for gradient LUT generation.
-    level: Level,
     /// Scratch space for maintaining the cache.
     scratch: ScratchSpace,
 }
@@ -55,14 +52,13 @@ struct ScratchSpace {
 
 impl GradientRampCache {
     /// Create a new gradient ramp cache with the specified retained count.
-    pub(crate) fn new(retained_count: u32, level: Level) -> Self {
+    pub(crate) fn new(retained_count: u32) -> Self {
         Self {
             epoch: 0,
             cache: HashMap::new(),
             luts: Vec::new(),
             has_changed: false,
             retained_count,
-            level,
             scratch: ScratchSpace::default(),
         }
     }
@@ -83,8 +79,7 @@ impl GradientRampCache {
 
         // Generate new gradient LUT.
         let lut_start = self.luts.len() as u32 / BYTES_PER_TEXEL;
-        let width = dispatch!(self.level, simd => generate_gradient_lut_impl(simd, gradient, &mut self.luts))
-            as u32;
+        let width = write_gradient_record(gradient, &mut self.luts) as u32;
         let cached_ramp = CachedRamp { width, lut_start };
         self.has_changed = true;
         self.cache
@@ -272,17 +267,34 @@ pub(crate) struct CachedRamp {
 // to avoid duplicate allocation when lut() is only used once (e.g., in gradient cache).
 // The current approach allocates LUT in OnceCell and then copies to output, keeping
 // both allocations alive.
-#[inline(always)]
-fn generate_gradient_lut_impl<S: Simd>(
-    simd: S,
-    gradient: &EncodedGradient,
-    output: &mut Vec<u8>,
-) -> usize {
-    let lut = gradient.u8_lut(simd);
-    let bytes: &[u8] = bytemuck::cast_slice(lut.lut());
-    output.reserve(bytes.len());
-    output.extend_from_slice(bytes);
-    lut.width()
+/// Append the texels the shaders evaluate a gradient from, returning how many there are.
+///
+/// The first texel holds the stop count and whether the stop colors are premultiplied. Next come
+/// the stop offsets, four to a texel so a binary search over them reads few texels, and then one
+/// texel per stop color.
+fn write_gradient_record(gradient: &EncodedGradient, output: &mut Vec<u8>) -> usize {
+    let stops = &gradient.exact_stops;
+    let premultiplied = if gradient.exact_stops_premultiplied {
+        1.0
+    } else {
+        0.0
+    };
+    let header = [stops.len() as f32, premultiplied, 0.0, 0.0];
+    let offsets = stops.chunks(4).map(|chunk| {
+        let mut texel = [0.0_f32; 4];
+        for (slot, stop) in texel.iter_mut().zip(chunk) {
+            *slot = stop.offset;
+        }
+        texel
+    });
+    let colors = stops.iter().map(|stop| stop.color);
+
+    let start = output.len();
+    for texel in core::iter::once(header).chain(offsets).chain(colors) {
+        output.extend_from_slice(bytemuck::bytes_of(&texel));
+    }
+
+    (output.len() - start) / BYTES_PER_TEXEL as usize
 }
 
 #[cfg(test)]
@@ -349,7 +361,7 @@ mod tests {
 
     #[test]
     fn test_cache_empty() {
-        let mut cache = GradientRampCache::new(5, Level::baseline());
+        let mut cache = GradientRampCache::new(5);
         cache.maintain();
 
         assert_eq!(cache.cache.len(), 0);
@@ -360,7 +372,7 @@ mod tests {
 
     #[test]
     fn test_unique_entry_creation() {
-        let mut cache = GradientRampCache::new(5, Level::baseline());
+        let mut cache = GradientRampCache::new(5);
         insert_entries(&mut cache, 4);
         cache.maintain();
 
@@ -371,7 +383,7 @@ mod tests {
 
     #[test]
     fn test_no_eviction_under_limit() {
-        let mut cache = GradientRampCache::new(5, Level::baseline());
+        let mut cache = GradientRampCache::new(5);
         insert_entries(&mut cache, 4);
         cache.maintain();
 
@@ -380,7 +392,7 @@ mod tests {
 
     #[test]
     fn test_no_eviction_at_limit() {
-        let mut cache = GradientRampCache::new(5, Level::baseline());
+        let mut cache = GradientRampCache::new(5);
         insert_entries(&mut cache, 5);
         cache.maintain();
 
@@ -389,7 +401,7 @@ mod tests {
 
     #[test]
     fn test_eviction_over_limit() {
-        let mut cache = GradientRampCache::new(5, Level::baseline());
+        let mut cache = GradientRampCache::new(5);
         insert_entries(&mut cache, 10);
         cache.maintain();
 
@@ -399,7 +411,7 @@ mod tests {
 
     #[test]
     fn test_lut_compaction_and_offset_updates() {
-        let mut cache = GradientRampCache::new(2, Level::baseline());
+        let mut cache = GradientRampCache::new(2);
 
         // Start from 1 to keep LUT sizes consistent, making it easier to test LUT size
         // before and after eviction.
@@ -442,7 +454,7 @@ mod tests {
 
     #[test]
     fn test_correct_lru_eviction() {
-        let mut cache = GradientRampCache::new(3, Level::baseline());
+        let mut cache = GradientRampCache::new(3);
 
         // Insert 3 gradients to fill the cache
         let gradient1 = create_gradient(0.1);
@@ -499,7 +511,7 @@ mod tests {
 
     #[test]
     fn test_take_and_restore_luts() {
-        let mut cache = GradientRampCache::new(5, Level::baseline());
+        let mut cache = GradientRampCache::new(5);
 
         let gradient1 = create_gradient(0.1);
         let gradient2 = create_gradient(0.2);
@@ -532,7 +544,7 @@ mod tests {
 
     #[test]
     fn test_lut_start_invalidation() {
-        let mut cache = GradientRampCache::new(2, Level::baseline());
+        let mut cache = GradientRampCache::new(2);
 
         let gradient_1 = create_encoded_gradient(create_gradient(0.1));
         let gradient_2 = create_encoded_gradient(create_gradient(0.2));

@@ -32,10 +32,9 @@ import package::helpers::gradient::{
     calculate_radial_gradient,
     get_gradient_extend_mode,
     get_gradient_start,
-    get_gradient_texture_width,
     get_sweep_inv_angle_delta,
     get_sweep_start_angle,
-    sample_gradient_lut,
+    evaluate_gradient,
     xy_to_unit_angle
 };
 import package::helpers::geometry::{pixel_to_ndc, quad_corner};
@@ -424,13 +423,12 @@ fn fs_main(
             let grad_pos = apply_gradient_transform(gradient_texel0, gradient_texel1, fragment_pos);
 
             // For linear gradient, t-value is just the x coordinate in gradient space
-            let t_value = grad_pos.x + 0.00001;
-            let gradient_color = sample_gradient_lut(
+            let t_value = grad_pos.x;
+            let gradient_color = evaluate_gradient(
                 gradient_texture,
                 t_value,
                 get_gradient_extend_mode(gradient_texel0),
-                get_gradient_start(gradient_texel0),
-                get_gradient_texture_width(gradient_texel0)
+                get_gradient_start(gradient_texel0)
             );
             final_color = alpha * gradient_color;
         } else if paint_type == PAINT_TYPE_RADIAL_GRADIENT {
@@ -446,12 +444,11 @@ fn fs_main(
 
             // For radial gradient, calculate distance from center
             let gradient_result = calculate_radial_gradient(grad_pos, gradient_texel2, gradient_texel3);
-            let gradient_color = sample_gradient_lut(
+            let gradient_color = evaluate_gradient(
                 gradient_texture,
                 gradient_result.x,
                 get_gradient_extend_mode(gradient_texel0),
-                get_gradient_start(gradient_texel0),
-                get_gradient_texture_width(gradient_texel0)
+                get_gradient_start(gradient_texel0)
             );
             final_color = select(
                 vec4<f32>(0.0, 0.0, 0.0, 0.0),
@@ -484,12 +481,11 @@ fn fs_main(
             // Convert unit angle [0, 1) to radians [0, 2π)
             let angle = unit_angle * TWO_PI;
             let t_value = (angle - get_sweep_start_angle(gradient_texel2)) * get_sweep_inv_angle_delta(gradient_texel2);
-            let gradient_color = sample_gradient_lut(
+            let gradient_color = evaluate_gradient(
                 gradient_texture,
                 t_value,
                 get_gradient_extend_mode(gradient_texel0),
-                get_gradient_start(gradient_texel0),
-                get_gradient_texture_width(gradient_texel0)
+                get_gradient_start(gradient_texel0)
             );
             final_color = alpha * gradient_color;
         } else if paint_type == PAINT_TYPE_BLURRED_ROUNDED_RECT {

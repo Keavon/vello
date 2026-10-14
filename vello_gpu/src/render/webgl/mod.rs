@@ -43,7 +43,7 @@ use crate::{
     blend::{BlendStrip, GpuBlendInstance},
     copy::GpuCopyInstance,
     filter::{FilterContext, FilterInstanceData, FilterPassPlan},
-    gradient_cache::GradientRampCache,
+    gradient_cache::{BYTES_PER_TEXEL as GRADIENT_BYTES_PER_TEXEL, GradientRampCache},
     paint::{PaintResolver, TextureSourceId},
     render::{
         Config,
@@ -407,7 +407,7 @@ impl WebGlRenderer {
         // dimension and the maximum gradient LUT size - worst case scenario.
         let max_gradient_cache_size = resource_texture_dimension_2d * resource_texture_dimension_2d
             / MAX_GRADIENT_LUT_SIZE as u32;
-        let gradient_cache = GradientRampCache::new(max_gradient_cache_size, settings.level);
+        let gradient_cache = GradientRampCache::new(max_gradient_cache_size);
         let layer_config = settings.memory_settings.layers_config;
         let init = WebGlRendererInit {
             programs: PendingWebGlPrograms::new(
@@ -1856,9 +1856,8 @@ impl WebGlPrograms {
         }
 
         let gradient_data_size = gradient_cache.luts_size();
-        // Each texel is RGBA8, so 4 bytes per texel
-        let required_gradient_height =
-            (gradient_data_size as u32).div_ceil(resource_texture_dimension_2d * 4);
+        let required_gradient_height = (gradient_data_size as u32)
+            .div_ceil(resource_texture_dimension_2d * GRADIENT_BYTES_PER_TEXEL);
 
         let current_gradient_height = self.resources.gradient_texture_height;
         if required_gradient_height > current_gradient_height {
@@ -1870,7 +1869,7 @@ impl WebGlPrograms {
 
             self.resources.gradient_texture = create_data_texture_storage(
                 gl,
-                WebGl2RenderingContext::RGBA8,
+                WebGl2RenderingContext::RGBA32F,
                 resource_texture_dimension_2d,
                 required_gradient_height,
             )?;
@@ -1990,15 +1989,21 @@ impl WebGlPrograms {
         }
 
         let gradient_texture_width = self.resources.resource_texture_dimension_2d;
-        // Each texel is RGBA8, so 4 bytes per texel. Only the rows covering the LUT cache are
-        // uploaded; see `upload_alpha_texture`.
-        let used_height = (gradient_cache.luts_size() as u32).div_ceil(gradient_texture_width * 4);
-        let used_size = (gradient_texture_width * used_height * 4) as usize;
+        // Only the rows covering the gradient records are uploaded; see `upload_alpha_texture`.
+        let used_height = (gradient_cache.luts_size() as u32)
+            .div_ceil(gradient_texture_width * GRADIENT_BYTES_PER_TEXEL);
+        let used_floats = (gradient_texture_width * used_height * 4) as usize;
 
-        // Take ownership of the luts to avoid copying, then pad to the end of the last used row.
-        let mut luts = gradient_cache.take_luts();
-        let old_luts_len = luts.len();
-        luts.resize(used_size, 0);
+        // WebGL uploads float textures from a `Float32Array`, so the records are copied into one,
+        // padded to the end of the last used row.
+        let floats = js_sys::Float32Array::new_with_length(used_floats as u32);
+        let luts = gradient_cache.take_luts();
+        let values: Vec<f32> = luts
+            .chunks_exact(4)
+            .map(|bytes| f32::from_ne_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+            .collect();
+        floats.subarray(0, values.len() as u32).copy_from(&values);
+        gradient_cache.restore_luts(luts);
 
         gl.active_texture(WebGl2RenderingContext::TEXTURE0);
         gl.bind_texture(
@@ -2006,26 +2011,20 @@ impl WebGlPrograms {
             Some(&self.resources.gradient_texture),
         );
 
-        let result = gl
-            .tex_sub_image_2d_with_i32_and_i32_and_u32_and_type_and_opt_u8_array(
-                WebGl2RenderingContext::TEXTURE_2D,
-                0,
-                0,
-                0,
-                gradient_texture_width as i32,
-                used_height as i32,
-                WebGl2RenderingContext::RGBA,
-                WebGl2RenderingContext::UNSIGNED_BYTE,
-                Some(&luts),
-            )
-            .map_js_error(WebGlOperation::DataTransfer(
-                WebGlDataTransferOperation::TextureUpload,
-            ));
-
-        // Restore the luts back to the cache.
-        luts.truncate(old_luts_len);
-        gradient_cache.restore_luts(luts);
-        result?;
+        gl.tex_sub_image_2d_with_i32_and_i32_and_u32_and_type_and_opt_array_buffer_view(
+            WebGl2RenderingContext::TEXTURE_2D,
+            0,
+            0,
+            0,
+            gradient_texture_width as i32,
+            used_height as i32,
+            WebGl2RenderingContext::RGBA,
+            WebGl2RenderingContext::FLOAT,
+            Some(&floats),
+        )
+        .map_js_error(WebGlOperation::DataTransfer(
+            WebGlDataTransferOperation::TextureUpload,
+        ))?;
 
         Ok(())
     }
@@ -2485,7 +2484,7 @@ fn create_webgl_resources(
     let encoded_paints_texture = create_placeholder_rgba32ui_texture(gl)?;
 
     // Create and configure gradient texture.
-    let gradient_texture = create_placeholder_rgba8_texture(gl)?;
+    let gradient_texture = create_data_texture_storage(gl, WebGl2RenderingContext::RGBA32F, 1, 1)?;
     let placeholder_external_texture = create_placeholder_rgba8_texture(gl)?;
 
     let layer_textures: [Vec<WebGlIntermediateTexture>; 2] = core::array::from_fn(|_| Vec::new());
