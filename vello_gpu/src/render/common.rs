@@ -739,16 +739,26 @@ pub(crate) fn pack_image_offset(x: u16, y: u16) -> u32 {
     ((x as u32) << 16) | (y as u32)
 }
 
-/// Pack image `quality` and extend modes into a single u32.
+/// Pack image `quality`, extend modes, and mipmap level count into a single u32.
+/// `mip_level_count`: stored in bits 6-10 (5 bits)
 /// `extend_y`: stored in bits 4-5 (2 bits)
 /// `extend_x`: stored in bits 2-3 (2 bits)
 /// `quality`: stored in bits 0-1 (2 bits)
 #[inline(always)]
-pub(crate) fn pack_image_params(quality: u32, extend_x: u32, extend_y: u32) -> u32 {
+pub(crate) fn pack_image_params(
+    quality: u32,
+    extend_x: u32,
+    extend_y: u32,
+    mip_level_count: u32,
+) -> u32 {
     debug_assert!(extend_x <= 3, "extend_x must be 0-3 (2 bits)");
     debug_assert!(extend_y <= 3, "extend_y must be 0-3 (2 bits)");
     debug_assert!(quality <= 3, "quality must be 0-3 (2 bits)");
-    (extend_y << 4) | (extend_x << 2) | quality
+    debug_assert!(
+        (1..=31).contains(&mip_level_count),
+        "mip_level_count must be 1-31 (5 bits)"
+    );
+    (mip_level_count << 6) | (extend_y << 4) | (extend_x << 2) | quality
 }
 
 /// Pack an optional [`Tint`](vello_common::paint::Tint) into a (`tint_color_u32`, `tint_mode_u32`) pair for the GPU.

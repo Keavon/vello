@@ -42,6 +42,7 @@ import package::helpers::geometry::{pixel_to_ndc, quad_corner};
 import package::helpers::image::{
     TINT_MODE_MULTIPLY,
     get_image_extend_modes,
+    get_image_mip_level_count,
     get_image_offset,
     get_image_quality,
     get_image_size,
@@ -414,6 +415,7 @@ fn fs_main(
                 image_offset,
                 image_size,
                 log2(max(texels_per_pixel, 1.0)),
+                f32(get_image_mip_level_count(image_texel0) - 1u),
             );
 
             final_color = alpha * select(

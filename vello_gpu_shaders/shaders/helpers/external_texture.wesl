@@ -100,7 +100,7 @@ fn external_mipmap_sample(
 }
 
 // Samples an external image. `level` is the base 2 logarithm of the texels the image steps across per pixel. Above zero, the
-// smooth qualities blend the two nearest mipmap levels if the texture has them, so a minified image averages its texels
+// smooth qualities blend the two nearest mipmap levels up to `last_level`, so a minified image averages its texels
 // rather than skipping over them.
 fn sample_external_image(
     external_texture: texture_2d<f32>,
@@ -109,8 +109,8 @@ fn sample_external_image(
     image_offset: vec2<f32>,
     image_size: vec2<f32>,
     level: f32,
+    last_level: f32,
 ) -> vec4<f32> {
-    let last_level = f32(textureNumLevels(external_texture) - 1u);
     if quality != IMAGE_QUALITY_LOW && level > 0.0 && last_level > 0.0 {
         let clamped_level = min(level, last_level);
         let lower_level = floor(clamped_level);

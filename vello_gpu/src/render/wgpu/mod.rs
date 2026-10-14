@@ -693,7 +693,10 @@ impl Renderer {
                         self.encode_image_paint(img, image_resource)
                     }
                     ImageSource::ExternalTexture {
-                        id, source_region, ..
+                        id,
+                        source_region,
+                        mip_level_count,
+                        ..
                     } => {
                         let texture_view = texture_bindings
                             .get(*id)
@@ -702,7 +705,7 @@ impl Renderer {
                         if texture_view.texture() == render_target_texture {
                             return Err(RenderError::TextureFeedbackLoop(*id));
                         }
-                        self.encode_external_texture_paint(img, *source_region)
+                        self.encode_external_texture_paint(img, *source_region, *mip_level_count)
                     }
                     ImageSource::Pixmap(_) => {
                         panic!("pixmap image sources are not supported by Vello GPU")
@@ -737,6 +740,7 @@ impl Renderer {
             image.sampler.quality as u32,
             image.sampler.x_extend as u32,
             image.sampler.y_extend as u32,
+            1,
         );
         let (tint, tint_mode) = pack_tint(image.tint);
 
@@ -755,6 +759,7 @@ impl Renderer {
         &self,
         image: &vello_common::encode::EncodedImage,
         region: RectU16,
+        mip_level_count: u8,
     ) -> GpuEncodedPaint {
         let transform = image.transform.as_coeffs().map(|x| x as f32);
         let image_size = pack_image_size(region.width(), region.height());
@@ -763,6 +768,7 @@ impl Renderer {
             image.sampler.quality as u32,
             image.sampler.x_extend as u32,
             image.sampler.y_extend as u32,
+            mip_level_count as u32,
         );
         let (tint, tint_mode) = pack_tint(image.tint);
 

@@ -92,6 +92,9 @@ pub enum ImageSource {
         source_region: RectU16,
         /// Whether the source region may contain non-opaque pixels.
         may_have_transparency: bool,
+        /// How many mipmap levels the texture has, which an image drawn smaller than its texels samples between.
+        /// One for a texture without mipmaps.
+        mip_level_count: u8,
     },
 }
 
@@ -135,6 +138,26 @@ impl ImageSource {
             id: texture_id,
             source_region,
             may_have_transparency,
+            mip_level_count: 1,
+        }
+    }
+
+    /// Declares how many mipmap levels an external texture has, from 1 to 31, so an image drawn smaller than its texels can sample them.
+    /// Other sources are returned unchanged.
+    pub fn with_mip_level_count(self, mip_level_count: u8) -> Self {
+        match self {
+            Self::ExternalTexture {
+                id,
+                source_region,
+                may_have_transparency,
+                ..
+            } => Self::ExternalTexture {
+                id,
+                source_region,
+                may_have_transparency,
+                mip_level_count: mip_level_count.clamp(1, 31),
+            },
+            other => other,
         }
     }
 

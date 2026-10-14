@@ -18,6 +18,7 @@ const TINT_MODE_MULTIPLY: u32 = 1u;
 //   bits 0-1: quality
 //   bits 2-3: extend_x
 //   bits 4-5: extend_y
+//   bits 6-10: mipmap level count (external textures only)
 // texel0.y: image_size, packed as [width:16, height:16]
 // texel0.z: image_offset, packed as [x:16, y:16]
 // texel0.w/texel1.x/texel1.y/texel1.z: transform matrix [a, b, c, d]
@@ -33,6 +34,9 @@ fn get_image_quality(texel0: vec4<u32>) -> u32 { return texel0.x & 0x3u; }
 fn get_image_extend_modes(texel0: vec4<u32>) -> vec2<u32> {
     return vec2<u32>((texel0.x >> 2u) & 0x3u, (texel0.x >> 4u) & 0x3u);
 }
+
+/// How many mipmap levels the image's texture has, at least one.
+fn get_image_mip_level_count(texel0: vec4<u32>) -> u32 { return max((texel0.x >> 6u) & 0x1Fu, 1u); }
 
 /// The size of the image in pixels.
 fn get_image_size(texel0: vec4<u32>) -> vec2<f32> {

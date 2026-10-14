@@ -889,7 +889,10 @@ impl WebGlRenderer {
                         self.encode_image_paint(img, image_resource)
                     }
                     ImageSource::ExternalTexture {
-                        id, source_region, ..
+                        id,
+                        source_region,
+                        mip_level_count,
+                        ..
                     } => {
                         let texture = texture_bindings
                             .get(*id)
@@ -897,7 +900,7 @@ impl WebGlRenderer {
                         if render_target_texture.is_some_and(|target| target == texture) {
                             return Err(WebGlError::Render(RenderError::TextureFeedbackLoop(*id)));
                         }
-                        Self::encode_external_texture_paint(img, *source_region)
+                        Self::encode_external_texture_paint(img, *source_region, *mip_level_count)
                     }
                     ImageSource::Pixmap(_) => {
                         panic!("pixmap image sources are not supported by Vello GPU")
@@ -932,6 +935,7 @@ impl WebGlRenderer {
             image.sampler.quality as u32,
             image.sampler.x_extend as u32,
             image.sampler.y_extend as u32,
+            1,
         );
         let (tint, tint_mode) = pack_tint(image.tint);
 
@@ -949,6 +953,7 @@ impl WebGlRenderer {
     fn encode_external_texture_paint(
         image: &vello_common::encode::EncodedImage,
         region: RectU16,
+        mip_level_count: u8,
     ) -> GpuEncodedPaint {
         let transform = image.transform.as_coeffs().map(|x| x as f32);
         let image_size = pack_image_size(region.width(), region.height());
@@ -957,6 +962,7 @@ impl WebGlRenderer {
             image.sampler.quality as u32,
             image.sampler.x_extend as u32,
             image.sampler.y_extend as u32,
+            mip_level_count as u32,
         );
         let (tint, tint_mode) = pack_tint(image.tint);
 
