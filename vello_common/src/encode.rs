@@ -9,6 +9,7 @@ use crate::color::{ColorSpaceTag, HueDirection, Srgb, gradient};
 use crate::kurbo::{Affine, Point, Vec2};
 use crate::math::{FloatExt, compute_erf7};
 use crate::paint::{Image, ImageSource, IndexedPaint, Paint, PremulColor, Tint, TintMode};
+use crate::pencil_gradient::{PencilGeometry, PencilGradient};
 use crate::peniko::{ColorStop, ColorStops, Extend, Gradient, GradientKind, ImageQuality};
 use crate::util::f32_to_u8;
 use alloc::borrow::Cow;
@@ -74,41 +75,69 @@ impl EncodeExt for Gradient {
         transform: Affine,
         _tint: Option<Tint>,
     ) -> Option<Paint> {
-        let inverse_transform = invert_paint_transform(transform)?;
+        encode_gradient(self, None, paints, transform)
+    }
+}
 
-        // Make sure that the gradient is valid and not degenerate.
-        if let Err(paint) = validate(self) {
-            return Some(paint);
+impl EncodeExt for PencilGradient {
+    /// Encode the gradient into a paint.
+    fn encode_into(
+        &self,
+        paints: &mut Vec<EncodedPaint>,
+        transform: Affine,
+        _tint: Option<Tint>,
+    ) -> Option<Paint> {
+        encode_gradient(&self.ramp, Some(self.geometry), paints, transform)
+    }
+}
+
+/// Encode a gradient, with its contours placed by `pencil` rather than its kind when given.
+fn encode_gradient(
+    gradient: &Gradient,
+    pencil: Option<PencilGeometry>,
+    paints: &mut Vec<EncodedPaint>,
+    transform: Affine,
+) -> Option<Paint> {
+    let inverse_transform = invert_paint_transform(transform)?;
+
+    // Make sure that the gradient is valid and not degenerate.
+    if let Err(paint) = validate(gradient, pencil.is_none()) {
+        return Some(paint);
+    }
+
+    let mut may_have_transparency = gradient.stops.iter().any(|s| s.color.components[3] != 1.0);
+
+    let mut base_transform;
+
+    let mut stops = Cow::Borrowed(&gradient.stops.0);
+
+    let first_stop = &stops[0];
+    let last_stop = &stops[stops.len() - 1];
+
+    if first_stop.offset != 0.0 || last_stop.offset != 1.0 {
+        let mut vec = stops.to_smallvec();
+
+        if first_stop.offset != 0.0 {
+            let mut first_stop = *first_stop;
+            first_stop.offset = 0.0;
+            vec.insert(0, first_stop);
         }
 
-        let mut may_have_transparency = self.stops.iter().any(|s| s.color.components[3] != 1.0);
-
-        let mut base_transform;
-
-        let mut stops = Cow::Borrowed(&self.stops.0);
-
-        let first_stop = &stops[0];
-        let last_stop = &stops[stops.len() - 1];
-
-        if first_stop.offset != 0.0 || last_stop.offset != 1.0 {
-            let mut vec = stops.to_smallvec();
-
-            if first_stop.offset != 0.0 {
-                let mut first_stop = *first_stop;
-                first_stop.offset = 0.0;
-                vec.insert(0, first_stop);
-            }
-
-            if last_stop.offset != 1.0 {
-                let mut last_stop = *last_stop;
-                last_stop.offset = 1.0;
-                vec.push(last_stop);
-            }
-
-            stops = Cow::Owned(vec);
+        if last_stop.offset != 1.0 {
+            let mut last_stop = *last_stop;
+            last_stop.offset = 1.0;
+            vec.push(last_stop);
         }
 
-        let kind = match self.kind {
+        stops = Cow::Owned(vec);
+    }
+
+    // The pencil's geometry is already in gradient space
+    let kind = if let Some(geometry) = pencil {
+        base_transform = Affine::IDENTITY;
+        EncodedKind::Pencil(geometry)
+    } else {
+        match gradient.kind {
             GradientKind::Linear(LinearGradientPosition { start: p0, end: p1 }) => {
                 // We update the transform currently in-place, such that the gradient line always
                 // starts at the point (0, 0) and ends at the point (1, 0). This simplifies the
@@ -183,74 +212,75 @@ impl EncodeExt for Gradient {
                     inv_angle_delta: 1.0 / (end_angle - start_angle),
                 })
             }
-        };
+        }
+    };
 
-        let ranges = encode_stops(
-            &stops,
-            self.interpolation_cs,
-            self.hue_direction,
-            self.interpolation_alpha_space,
-        );
-        let exact_stops = encode_exact_stops(
-            &stops,
-            self.interpolation_cs,
-            self.hue_direction,
-            self.interpolation_alpha_space,
-        );
+    let ranges = encode_stops(
+        &stops,
+        gradient.interpolation_cs,
+        gradient.hue_direction,
+        gradient.interpolation_alpha_space,
+    );
+    let exact_stops = encode_exact_stops(
+        &stops,
+        gradient.interpolation_cs,
+        gradient.hue_direction,
+        gradient.interpolation_alpha_space,
+    );
 
-        // This represents the transform that needs to be applied to the starting point of a
-        // command before starting with the rendering.
-        // First we need to account for the base transform of the shader, then
-        // we need to apply the _inverse_ paint transform to the point so that we can account
-        // for the paint transform of the render context.
-        let transform = base_transform * inverse_transform;
+    // This represents the transform that needs to be applied to the starting point of a
+    // command before starting with the rendering.
+    // First we need to account for the base transform of the shader, then
+    // we need to apply the _inverse_ paint transform to the point so that we can account
+    // for the paint transform of the render context.
+    let transform = base_transform * inverse_transform;
 
-        // One possible approach to calculating the positions would be to apply the above
-        // transform to each rendered pixel. Instead, renderers apply the transform to the first
-        // pixel of a span and then incrementally update the current x/y position.
-        //
-        // Pixels are rendered in column-major order: for a specific x, we calculate the values for
-        // all y coordinates before incrementing x. To update the position incrementally, we
-        // calculate how the transform affects the x/y unit vectors and use those as the step deltas.
-        let (x_advance, y_advance) = x_y_advances(&transform);
+    // One possible approach to calculating the positions would be to apply the above
+    // transform to each rendered pixel. Instead, renderers apply the transform to the first
+    // pixel of a span and then incrementally update the current x/y position.
+    //
+    // Pixels are rendered in column-major order: for a specific x, we calculate the values for
+    // all y coordinates before incrementing x. To update the position incrementally, we
+    // calculate how the transform affects the x/y unit vectors and use those as the step deltas.
+    let (x_advance, y_advance) = x_y_advances(&transform);
 
-        let cache_key = CacheKey(GradientCacheKey {
-            stops: self.stops.clone(),
-            interpolation_cs: self.interpolation_cs,
-            interpolation_alpha_space: self.interpolation_alpha_space,
-            hue_direction: self.hue_direction,
-        });
+    let cache_key = CacheKey(GradientCacheKey {
+        stops: gradient.stops.clone(),
+        interpolation_cs: gradient.interpolation_cs,
+        interpolation_alpha_space: gradient.interpolation_alpha_space,
+        hue_direction: gradient.hue_direction,
+    });
 
-        let has_undefined = kind.has_undefined();
+    let has_undefined = kind.has_undefined();
 
-        let encoded = EncodedGradient {
-            cache_key,
-            kind,
-            has_undefined,
-            transform,
-            x_advance,
-            y_advance,
-            ranges,
-            exact_stops,
-            exact_stops_premultiplied: self.interpolation_alpha_space
-                == InterpolationAlphaSpace::Premultiplied,
-            extend: self.extend,
-            may_have_transparency,
-            u8_lut: OnceCell::new(),
-            f32_lut: OnceCell::new(),
-        };
+    let encoded = EncodedGradient {
+        cache_key,
+        kind,
+        has_undefined,
+        transform,
+        x_advance,
+        y_advance,
+        ranges,
+        exact_stops,
+        exact_stops_premultiplied: gradient.interpolation_alpha_space
+            == InterpolationAlphaSpace::Premultiplied,
+        extend: gradient.extend,
+        may_have_transparency,
+        u8_lut: OnceCell::new(),
+        f32_lut: OnceCell::new(),
+    };
 
-        let idx = paints.len();
-        paints.push(encoded.into());
+    let idx = paints.len();
+    paints.push(encoded.into());
 
-        Some(Paint::Indexed(IndexedPaint::new(idx)))
-    }
+    Some(Paint::Indexed(IndexedPaint::new(idx)))
 }
 
 /// Returns a fallback paint in case the gradient is invalid.
 ///
-/// The paint will be either black or contain the color of the first stop of the gradient.
-fn validate(gradient: &Gradient) -> Result<(), Paint> {
+/// The paint will be either black or contain the color of the first stop of the gradient. The
+/// geometry of its kind is checked only with `check_kind`.
+fn validate(gradient: &Gradient, check_kind: bool) -> Result<(), Paint> {
     let black = Err(BLACK.into());
 
     // Gradients need at least two stops.
@@ -291,6 +321,11 @@ fn validate(gradient: &Gradient) -> Result<(), Paint> {
     };
 
     let degenerate_val = |v1: f32, v2: f32| (v2 - v1).abs() <= DEGENERATE_THRESHOLD;
+
+    // A pencil gradient's geometry replaces its kind
+    if !check_kind {
+        return Ok(());
+    }
 
     match &gradient.kind {
         GradientKind::Linear(LinearGradientPosition { start, end }) => {
@@ -861,6 +896,8 @@ pub enum EncodedKind {
     Radial(RadialKind),
     /// An encoded sweep gradient.
     Sweep(SweepKind),
+    /// An encoded pencil-of-circles gradient, whose geometry is already in gradient space.
+    Pencil(PencilGeometry),
 }
 
 impl EncodedKind {
@@ -1301,6 +1338,7 @@ mod private {
     pub trait Sealed {}
 
     impl Sealed for super::Gradient {}
+    impl Sealed for super::PencilGradient {}
 }
 
 #[cfg(test)]

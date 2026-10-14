@@ -235,6 +235,8 @@ impl<'a> PaintResolver<'a> {
                             EncodedKind::Linear(_) => PAINT_TYPE_LINEAR_GRADIENT,
                             EncodedKind::Radial(_) => PAINT_TYPE_RADIAL_GRADIENT,
                             EncodedKind::Sweep(_) => PAINT_TYPE_SWEEP_GRADIENT,
+                            // Pencil gradients generalize radial ones, whose shader path tells them apart
+                            EncodedKind::Pencil(_) => PAINT_TYPE_RADIAL_GRADIENT,
                         };
                         (paint_type, None)
                     }

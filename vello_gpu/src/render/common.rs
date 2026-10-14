@@ -20,6 +20,7 @@ use vello_common::color::{AlphaColor, Srgb};
 use vello_common::encode::{EncodedImage, FocalKind, RadialKind};
 use vello_common::geometry::{RectU16, SizeU16};
 use vello_common::paint::TintMode;
+use vello_common::pencil_gradient::{PencilGeometry, PencilSelection};
 use vello_common::record::CommandRecorder;
 
 // TODO: If we want to use native bilinear sampling for uploaded images,
@@ -316,6 +317,8 @@ pub(crate) enum GpuEncodedPaint {
     LinearGradient(GpuLinearGradient),
     /// An encoded radial gradient.
     RadialGradient(GpuRadialGradient),
+    /// An encoded pencil-of-circles gradient, which shares the radial gradients' paint type.
+    PencilGradient(GpuPencilGradient),
     /// An encoded sweep gradient.
     SweepGradient(GpuSweepGradient),
     /// An encoded blurred rounded rectangle.
@@ -336,6 +339,7 @@ impl GpuEncodedPaint {
     const NATIVE_IMAGE_TEXELS: u32 = texels::<GpuNativeImage>();
     const LINEAR_TEXELS: u32 = texels::<GpuLinearGradient>();
     const RADIAL_TEXELS: u32 = texels::<GpuRadialGradient>();
+    const PENCIL_TEXELS: u32 = texels::<GpuPencilGradient>();
     const SWEEP_TEXELS: u32 = texels::<GpuSweepGradient>();
     const BLURRED_RECT_TEXELS: u32 = texels::<GpuBlurredRoundedRect>();
 
@@ -349,6 +353,7 @@ impl GpuEncodedPaint {
             Self::WgpuExternalTexture(paint) => bytemuck::bytes_of(paint),
             Self::LinearGradient(paint) => bytemuck::bytes_of(paint),
             Self::RadialGradient(paint) => bytemuck::bytes_of(paint),
+            Self::PencilGradient(paint) => bytemuck::bytes_of(paint),
             Self::SweepGradient(paint) => bytemuck::bytes_of(paint),
             Self::BlurredRoundedRect(paint) => bytemuck::bytes_of(paint),
         }
@@ -363,6 +368,7 @@ impl GpuEncodedPaint {
             Self::WgpuExternalTexture(_) => Self::NATIVE_IMAGE_TEXELS,
             Self::LinearGradient(_) => Self::LINEAR_TEXELS,
             Self::RadialGradient(_) => Self::RADIAL_TEXELS,
+            Self::PencilGradient(_) => Self::PENCIL_TEXELS,
             Self::SweepGradient(_) => Self::SWEEP_TEXELS,
             Self::BlurredRoundedRect(_) => Self::BLURRED_RECT_TEXELS,
         }
@@ -525,6 +531,38 @@ pub(crate) struct GpuRadialGradient {
     pub bias: f32,
 }
 
+/// GPU encoded pencil-of-circles gradient data, which the shaders tell apart from a
+/// [`GpuRadialGradient`] by `RADIAL_PENCIL_FLAG` in the same position as its kind.
+/// Align to 16 bytes for `RGBA32Uint` alignment.
+#[repr(C, align(16))]
+#[derive(Debug, Clone, Copy, Zeroable, Pod)]
+#[allow(dead_code, reason = "Clippy fails when --no-default-features")]
+pub(crate) struct GpuPencilGradient {
+    /// Packed texture width (bits 0-30) and extend mode (bit 31: 0=Pad, 1=Repeat).
+    pub texture_width_and_extend_mode: u32,
+    /// Start coordinate in the flat gradient texture for dense packing.
+    pub gradient_start: u32,
+    /// Transform matrix [a, b, c, d, tx, ty].
+    pub transform: [f32; 6],
+    /// Always `RADIAL_PENCIL_FLAG`.
+    pub kind_and_flags: u32,
+    /// The start contour's `[a, b, c]`.
+    pub start: [f32; 3],
+    /// The end contour's `[a, b, c]`.
+    pub end: [f32; 3],
+    /// 0 to select crossings on the same side as the radical x in `selection[0]`, 1 to select
+    /// them by the quadratic in `selection`.
+    pub selection_mode: u32,
+    /// The radical x, or the selection quadratic's coefficients.
+    pub selection: [f32; 3],
+    /// The wrap's reference x, band side (0 for no wrap), and t.
+    pub wrap: [f32; 3],
+    /// Maps a crossing `x` to the gradient position `x * t_scale + t_offset`.
+    pub t_scale: f32,
+    /// See `t_scale`.
+    pub t_offset: f32,
+}
+
 /// GPU encoded sweep gradient data.
 /// Align to 16 bytes for `RGBA32Uint` alignment.
 #[repr(C, align(16))]
@@ -567,6 +605,7 @@ const RADIAL_KIND_STRIP: u32 = 1;
 const RADIAL_KIND_FOCAL_ON_CIRCLE: u32 = 2;
 const RADIAL_KIND_FOCAL: u32 = 3;
 const RADIAL_NEGATE_ROOT_FLAG: u32 = 1 << 2;
+const RADIAL_PENCIL_FLAG: u32 = 1 << 3;
 
 /// Encode a radial gradient.
 pub(crate) fn encode_radial_gradient(
@@ -606,6 +645,36 @@ pub(crate) fn encode_radial_gradient(
         param,
         scale,
         bias,
+    }
+}
+
+/// Encode a pencil-of-circles gradient.
+pub(crate) fn encode_pencil_gradient(
+    texture_width_and_extend_mode: u32,
+    gradient_start: u32,
+    transform: [f32; 6],
+    geometry: &PencilGeometry,
+) -> GpuPencilGradient {
+    let (selection_mode, selection) = match geometry.selection {
+        PencilSelection::SameSideAs { radical_x } => (0, [radical_x, 0.0, 0.0]),
+        PencilSelection::OnArc { quadratic } => (1, quadratic),
+    };
+    let wrap = geometry
+        .wrap
+        .map_or([0.0; 3], |wrap| [wrap.reference_x, wrap.band_side, wrap.t]);
+
+    GpuPencilGradient {
+        texture_width_and_extend_mode,
+        gradient_start,
+        transform,
+        kind_and_flags: RADIAL_PENCIL_FLAG,
+        start: geometry.start,
+        end: geometry.end,
+        selection_mode,
+        selection,
+        wrap,
+        t_scale: geometry.t_scale,
+        t_offset: geometry.t_offset,
     }
 }
 

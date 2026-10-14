@@ -50,8 +50,9 @@ use crate::{
         common::{
             DeviceLimits, GpuBlurredRoundedRect, GpuEncodedImage, GpuEncodedPaint,
             GpuLinearGradient, GpuSweepGradient, ScratchBuffers, ScratchTexture,
-            encode_native_image_paint, encode_radial_gradient, pack_image_offset,
-            pack_image_params, pack_image_size, pack_texture_width_and_extend_mode, pack_tint,
+            encode_native_image_paint, encode_pencil_gradient, encode_radial_gradient,
+            pack_image_offset, pack_image_params, pack_image_size,
+            pack_texture_width_and_extend_mode, pack_tint,
         },
     },
     scene::Scene,
@@ -1088,6 +1089,14 @@ impl WebGlRenderer {
                 inv_angle_delta: sweep.inv_angle_delta,
                 _padding: [0, 0],
             }),
+            EncodedKind::Pencil(geometry) => {
+                GpuEncodedPaint::PencilGradient(encode_pencil_gradient(
+                    texture_width_and_extend_mode,
+                    gradient_start,
+                    transform,
+                    geometry,
+                ))
+            }
         }
     }
 

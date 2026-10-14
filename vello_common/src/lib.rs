@@ -73,6 +73,7 @@ pub mod mask;
 pub mod math;
 pub mod multi_atlas;
 pub mod paint;
+pub mod pencil_gradient;
 #[doc(hidden)]
 #[cfg(feature = "pico_svg")]
 pub mod pico_svg;
@@ -107,6 +108,9 @@ pub mod reexports {
         pub use crate::mask::Mask;
         pub use crate::paint::{
             Image, ImageId, ImageSource, PaintType, TextureRegion, Tint, TintMode,
+        };
+        pub use crate::pencil_gradient::{
+            PencilGeometry, PencilGradient, PencilSelection, PencilWrap,
         };
         pub use crate::pixmap::{PixelMetadata, Pixels, Pixmap};
         pub use crate::render_state::RenderState;
