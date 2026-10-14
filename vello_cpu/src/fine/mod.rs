@@ -17,6 +17,7 @@ use crate::filter::context::ScratchBuffer;
 use crate::fine::common::gradient::GradientPainter;
 pub(crate) use crate::fine::common::gradient::calculate_t_vals;
 pub(crate) use crate::fine::common::gradient::linear::SimdLinearKind;
+pub(crate) use crate::fine::common::gradient::pencil::SimdPencilKind;
 pub(crate) use crate::fine::common::gradient::radial::SimdRadialKind;
 pub(crate) use crate::fine::common::gradient::sweep::SimdSweepKind;
 use crate::fine::common::image::{FilteredImagePainter, NNImagePainter, PlainNNImagePainter};
@@ -1073,6 +1074,20 @@ impl<S: Simd, T: FineKernel<S>> Fine<S, T> {
                                 T::gradient_painter(simd, gradient, t_vals)
                             );
                         }
+                    }
+                    EncodedKind::Pencil(geometry) => {
+                        calculate_t_vals(
+                            simd,
+                            SimdPencilKind::new(simd, geometry),
+                            t_vals,
+                            gradient,
+                            sampler_x,
+                            sampler_y,
+                        );
+                        fill_complex_paint!(
+                            gradient.may_have_transparency,
+                            T::gradient_painter(simd, gradient, t_vals)
+                        );
                     }
                 }
             }

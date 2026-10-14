@@ -461,6 +461,8 @@ pub(crate) enum GpuEncodedPaint {
     RadialGradient(GpuRadialGradient),
     /// An encoded sweep gradient.
     SweepGradient(GpuSweepGradient),
+    /// An encoded pencil-of-circles gradient.
+    PencilGradient(GpuPencilGradient),
     /// An encoded blurred rounded rectangle.
     BlurredRoundedRect(GpuBlurredRoundedRect),
 }
@@ -479,6 +481,7 @@ impl GpuEncodedPaint {
     const LINEAR_TEXELS: u32 = texels::<GpuLinearGradient>();
     const RADIAL_TEXELS: u32 = texels::<GpuRadialGradient>();
     const SWEEP_TEXELS: u32 = texels::<GpuSweepGradient>();
+    const PENCIL_TEXELS: u32 = texels::<GpuPencilGradient>();
     const BLURRED_RECT_TEXELS: u32 = texels::<GpuBlurredRoundedRect>();
 
     /// Returns the byte representation of this paint.
@@ -489,6 +492,7 @@ impl GpuEncodedPaint {
             Self::LinearGradient(paint) => bytemuck::bytes_of(paint),
             Self::RadialGradient(paint) => bytemuck::bytes_of(paint),
             Self::SweepGradient(paint) => bytemuck::bytes_of(paint),
+            Self::PencilGradient(paint) => bytemuck::bytes_of(paint),
             Self::BlurredRoundedRect(paint) => bytemuck::bytes_of(paint),
         }
     }
@@ -500,6 +504,7 @@ impl GpuEncodedPaint {
             Self::LinearGradient(_) => Self::LINEAR_TEXELS,
             Self::RadialGradient(_) => Self::RADIAL_TEXELS,
             Self::SweepGradient(_) => Self::SWEEP_TEXELS,
+            Self::PencilGradient(_) => Self::PENCIL_TEXELS,
             Self::BlurredRoundedRect(_) => Self::BLURRED_RECT_TEXELS,
         }
     }
@@ -625,6 +630,70 @@ pub(crate) struct GpuSweepGradient {
     pub inv_angle_delta: f32,
     /// Padding for 16-byte alignment.
     pub _padding: [u32; 2],
+}
+
+/// GPU encoded pencil-of-circles gradient data.
+/// Align to 16 bytes for `RGBA32Uint` alignment.
+#[repr(C, align(16))]
+#[derive(Debug, Clone, Copy, Zeroable, Pod)]
+#[allow(dead_code, reason = "Clippy fails when --no-default-features")]
+pub(crate) struct GpuPencilGradient {
+    /// Packed texture width (bits 0-30) and extend mode (bit 31: 0=Pad, 1=Repeat).
+    pub texture_width_and_extend_mode: u32,
+    /// Start coordinate in the flat gradient texture for dense packing.
+    pub gradient_start: u32,
+    /// Transform matrix [a, b, c, d, tx, ty].
+    pub transform: [f32; 6],
+    /// The start contour's `[a, b, c]`.
+    pub start: [f32; 3],
+    /// The end contour's `[a, b, c]`.
+    pub end: [f32; 3],
+    /// 0 to select crossings on the same side as the radical x in `selection[0]`, 1 to select
+    /// them by the quadratic in `selection`.
+    pub selection_mode: u32,
+    /// The radical x, or the selection quadratic's coefficients.
+    pub selection: [f32; 3],
+    /// The wrap's reference x, band side (0 for no wrap), and t.
+    pub wrap: [f32; 3],
+    /// Maps a crossing `x` to the gradient position `x * t_scale + t_offset`.
+    pub t_scale: f32,
+    /// See `t_scale`.
+    pub t_offset: f32,
+    /// Padding for 16-byte alignment.
+    pub _padding: u32,
+}
+
+impl GpuPencilGradient {
+    pub(crate) fn new(
+        geometry: &vello_common::pencil_gradient::PencilGeometry,
+        texture_width_and_extend_mode: u32,
+        gradient_start: u32,
+        transform: [f32; 6],
+    ) -> Self {
+        use vello_common::pencil_gradient::PencilSelection;
+
+        let (selection_mode, selection) = match geometry.selection {
+            PencilSelection::SameSideAs { radical_x } => (0, [radical_x, 0.0, 0.0]),
+            PencilSelection::OnArc { quadratic } => (1, quadratic),
+        };
+        let wrap = geometry
+            .wrap
+            .map_or([0.0; 3], |wrap| [wrap.reference_x, wrap.band_side, wrap.t]);
+
+        Self {
+            texture_width_and_extend_mode,
+            gradient_start,
+            transform,
+            start: geometry.start,
+            end: geometry.end,
+            selection_mode,
+            selection,
+            wrap,
+            t_scale: geometry.t_scale,
+            t_offset: geometry.t_offset,
+            _padding: 0,
+        }
+    }
 }
 
 // Constants for packing extend_mode and texture_width.

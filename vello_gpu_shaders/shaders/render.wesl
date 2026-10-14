@@ -29,6 +29,7 @@ import package::helpers::extend::extend_mode;
 import package::helpers::external_texture::sample_external_image;
 import package::helpers::gradient::{
     apply_gradient_transform,
+    calculate_pencil_gradient,
     calculate_radial_gradient,
     get_gradient_extend_mode,
     get_gradient_start,
@@ -63,6 +64,7 @@ const PAINT_TYPE_LINEAR_GRADIENT: u32 = 2u;
 const PAINT_TYPE_RADIAL_GRADIENT: u32 = 3u;
 const PAINT_TYPE_SWEEP_GRADIENT: u32 = 4u;
 const PAINT_TYPE_BLURRED_ROUNDED_RECT: u32 = 5u;
+const PAINT_TYPE_PENCIL_GRADIENT: u32 = 6u;
 
 // 24 bits for paint indices.
 const PAINT_TEXTURE_INDEX_MASK: u32 = 0x00FFFFFFu;
@@ -140,6 +142,7 @@ struct Config {
 // ├── paint_type = 2 (PAINT_TYPE_LINEAR_GRADIENT) - Linear gradient rendering
 // ├── paint_type = 3 (PAINT_TYPE_RADIAL_GRADIENT) - Radial gradient (with kind discriminator)
 // ├── paint_type = 4 (PAINT_TYPE_SWEEP_GRADIENT) - Sweep gradient rendering
+// ├── paint_type = 6 (PAINT_TYPE_PENCIL_GRADIENT) - Pencil-of-circles gradient rendering
 //     ├── payload = [x, y] scene coordinates (packed as u16s)
 //     └── bits 0-23 = paint_texture_idx
 // └── paint_type = 5 (PAINT_TYPE_BLURRED_ROUNDED_RECT) - Analytic blurred rounded rectangle
@@ -279,7 +282,7 @@ fn vs_main(
             );
             out.sample_xy = get_image_translate(image_texel1, image_texel2)
                 + get_image_transform(image_texel0, image_texel1) * pos;
-        } else if paint_type == PAINT_TYPE_LINEAR_GRADIENT || paint_type == PAINT_TYPE_RADIAL_GRADIENT || paint_type == PAINT_TYPE_SWEEP_GRADIENT || paint_type == PAINT_TYPE_BLURRED_ROUNDED_RECT {
+        } else if paint_type == PAINT_TYPE_LINEAR_GRADIENT || paint_type == PAINT_TYPE_RADIAL_GRADIENT || paint_type == PAINT_TYPE_SWEEP_GRADIENT || paint_type == PAINT_TYPE_PENCIL_GRADIENT || paint_type == PAINT_TYPE_BLURRED_ROUNDED_RECT {
             // Use view coordinates for gradient transform (always in global view space)
             out.sample_xy = vec2<f32>(
                 f32(scene_strip.x) + x * f32(width),
@@ -481,6 +484,24 @@ fn fs_main(
             // Convert unit angle [0, 1) to radians [0, 2π)
             let angle = unit_angle * TWO_PI;
             let t_value = (angle - get_sweep_start_angle(gradient_texel2)) * get_sweep_inv_angle_delta(gradient_texel2);
+            let gradient_color = evaluate_gradient(
+                gradient_texture,
+                t_value,
+                get_gradient_extend_mode(gradient_texel0),
+                get_gradient_start(gradient_texel0)
+            );
+            final_color = alpha * gradient_color;
+        } else if paint_type == PAINT_TYPE_PENCIL_GRADIENT {
+            let paint_tex_idx = paint_and_rect_flag & PAINT_TEXTURE_INDEX_MASK;
+            let gradient_texel0 = load_encoded_paint_texel(paint_tex_idx, 0u);
+            let gradient_texel1 = load_encoded_paint_texel(paint_tex_idx, 1u);
+            let gradient_texel2 = load_encoded_paint_texel(paint_tex_idx, 2u);
+            let gradient_texel3 = load_encoded_paint_texel(paint_tex_idx, 3u);
+            let gradient_texel4 = load_encoded_paint_texel(paint_tex_idx, 4u);
+            let gradient_texel5 = load_encoded_paint_texel(paint_tex_idx, 5u);
+
+            let grad_pos = apply_gradient_transform(gradient_texel0, gradient_texel1, sample_xy);
+            let t_value = calculate_pencil_gradient(grad_pos, gradient_texel2, gradient_texel3, gradient_texel4, gradient_texel5);
             let gradient_color = evaluate_gradient(
                 gradient_texture,
                 t_value,

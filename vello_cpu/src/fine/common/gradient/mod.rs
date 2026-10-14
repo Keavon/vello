@@ -9,6 +9,7 @@ use vello_common::encode::{EncodedGradient, GradientLut};
 use vello_common::fearless_simd::*;
 
 pub(crate) mod linear;
+pub(crate) mod pencil;
 pub(crate) mod radial;
 pub(crate) mod sweep;
 

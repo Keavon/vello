@@ -22,6 +22,7 @@ use vello_common::kurbo::{Affine, BezPath, Rect, Shape, Stroke};
 use vello_common::mask::Mask;
 use vello_common::multi_atlas::AtlasConfig;
 use vello_common::paint::{Paint, PaintType, PremulColor, Tint};
+use vello_common::pencil_gradient::PencilGradient;
 #[cfg(feature = "text")]
 use vello_common::peniko::FontData;
 use vello_common::peniko::color::palette::css::BLACK;
@@ -214,6 +215,8 @@ pub struct Scene {
     /// Viewport-dependent path and clip generation state.
     viewport_state: ViewportState,
     pub(crate) render_state: RenderState,
+    /// A pencil gradient that replaces the paint in `render_state`, until the next paint is set.
+    pencil_paint: Option<PencilGradient>,
     /// Root transform stack.
     root_transforms: RootTransforms,
     pub(crate) aliasing_threshold: Option<u8>,
@@ -244,6 +247,7 @@ impl Scene {
             height,
             viewport_state: ViewportState::new(width, height, level),
             render_state: RenderState::default(),
+            pencil_paint: None,
             root_transforms: RootTransforms::default(),
             aliasing_threshold: None,
             encoded_paints: vec![],
@@ -294,6 +298,9 @@ impl Scene {
         // corner. For vello_gpu, we don't need this, because the GPU itself already applies
         // this shift automatically.
         let transform = self.effective_paint_transform();
+        if let Some(pencil) = &self.pencil_paint {
+            return pencil.encode_into(&mut self.encoded_paints, transform, None);
+        }
         match &self.render_state.paint {
             PaintType::Solid(s) => Some(Paint::Solid(PremulColor::from_alpha_color(*s))),
             PaintType::Gradient(g) => g.encode_into(&mut self.encoded_paints, transform, None),
@@ -772,6 +779,15 @@ impl Scene {
     //       render time into a texture usable by the renderer backend.
     pub fn set_paint(&mut self, paint: impl Into<PaintType>) {
         self.render_state.paint = paint.into();
+        self.pencil_paint = None;
+    }
+
+    /// Set a pencil gradient as the paint for subsequent rendering operations, in place of the
+    /// paint from [`Self::set_paint`] until that is next called.
+    pub fn set_pencil_gradient_paint(&mut self, gradient: PencilGradient) {
+        // The ramp stands in as the paint wherever only the kind of paint matters
+        self.render_state.paint = PaintType::Gradient(gradient.ramp.clone());
+        self.pencil_paint = Some(gradient);
     }
 
     /// Set the tint for subsequent image paint operations.
@@ -864,6 +880,7 @@ impl Scene {
 
         self.root_transforms.reset();
         self.render_state.reset();
+        self.pencil_paint = None;
         self.aliasing_threshold = None;
         self.recorder.reset(self.width, self.height);
         self.filter = None;

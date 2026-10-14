@@ -264,3 +264,79 @@ fn calculate_radial_gradient(
 
     return vec2<f32>(t_value, select(0.0, 1.0, is_valid));
 }
+
+/// Stands in for an infinite gradient position, on contours that cross the gradient line at infinity.
+const PENCIL_UNBOUNDED_T: f32 = 1e6;
+
+/// A root as a (numerator, denominator) pair, scaled so the larger part has a magnitude of 1.
+fn normalized_pencil_root(numerator: f32, denominator: f32) -> vec2<f32> {
+    let root = vec2<f32>(numerator, denominator);
+    let scale = max(abs(numerator), abs(denominator));
+    return select(root / scale, root, scale == 0.0);
+}
+
+// Calculate a pencil-of-circles gradient; matches `PencilGeometry::t` in vello_common.
+//
+// The member of the pencil through the point keeps the ratio of the two end contours' values, so
+// it crosses the gradient line at the roots of a quadratic. The root that belongs to the point is
+// told apart by its side of the radical axis, or by the arc it lies on, and is then mapped linearly
+// to the gradient position.
+fn calculate_pencil_gradient(
+    grad_pos: vec2<f32>,
+    texel2: vec4<u32>,
+    texel3: vec4<u32>,
+    texel4: vec4<u32>,
+    texel5: vec4<u32>,
+) -> f32 {
+    let start = vec3<f32>(bitcast<f32>(texel2.x), bitcast<f32>(texel2.y), bitcast<f32>(texel2.z));
+    let end = vec3<f32>(bitcast<f32>(texel2.w), bitcast<f32>(texel3.x), bitcast<f32>(texel3.y));
+    let selection_mode = texel3.z;
+    let selection = vec3<f32>(bitcast<f32>(texel3.w), bitcast<f32>(texel4.x), bitcast<f32>(texel4.y));
+    let wrap_reference_x = bitcast<f32>(texel4.z);
+    let wrap_band_side = bitcast<f32>(texel4.w);
+    let wrap_t = bitcast<f32>(texel5.x);
+    let t_scale = bitcast<f32>(texel5.y);
+    let t_offset = bitcast<f32>(texel5.z);
+
+    // Normalized so the products below stay in range far from the origin
+    let x = grad_pos.x;
+    let length_squared = dot(grad_pos, grad_pos);
+    let start_raw = start.x * length_squared + start.y * x + start.z;
+    let end_raw = end.x * length_squared + end.y * x + end.z;
+    let scale = max(abs(start_raw), abs(end_raw));
+    if scale == 0.0 {
+        return 0.0;
+    }
+    let start_value = start_raw / scale;
+    let end_value = end_raw / scale;
+
+    let a = end_value * start.x - start_value * end.x;
+    let b = end_value * start.y - start_value * end.y;
+    let c = end_value * start.z - start_value * end.z;
+    let discriminant = max(b * b - 4.0 * a * c, 0.0);
+    let q = -0.5 * (b + select(-1.0, 1.0, b >= 0.0) * sqrt(discriminant));
+    let first = normalized_pencil_root(q, a);
+    let second = normalized_pencil_root(c, q);
+
+    var crossing: vec2<f32>;
+    if selection_mode == 0u {
+        // A point on the radical axis is on the member that is a line, the finite root
+        let radical_x = selection.x;
+        let first_side = (first.x - radical_x * first.y) * first.y * (x - radical_x);
+        let second_side = (second.x - radical_x * second.y) * second.y * (x - radical_x);
+        let first_wins = select(first_side > second_side, abs(first.y) >= abs(second.y), first_side == second_side);
+        crossing = select(second, first, first_wins);
+    } else {
+        let first_arc = selection.x * first.x * first.x + selection.y * first.x * first.y + selection.z * first.y * first.y;
+        let second_arc = selection.x * second.x * second.x + selection.y * second.x * second.y + selection.z * second.y * second.y;
+        crossing = select(second, first, first_arc <= second_arc);
+    }
+
+    if wrap_band_side != 0.0 && (crossing.x - wrap_reference_x * crossing.y) * crossing.y * wrap_band_side < 0.0 {
+        return wrap_t;
+    }
+    if crossing.y == 0.0 {
+        return sign(crossing.x * t_scale) * PENCIL_UNBOUNDED_T;
+    }
+    return crossing.x / crossing.y * t_scale + t_offset;
+}

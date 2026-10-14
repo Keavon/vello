@@ -19,6 +19,7 @@ const PAINT_TYPE_LINEAR_GRADIENT: u32 = 2;
 const PAINT_TYPE_RADIAL_GRADIENT: u32 = 3;
 const PAINT_TYPE_SWEEP_GRADIENT: u32 = 4;
 const PAINT_TYPE_BLURRED_ROUNDED_RECT: u32 = 5;
+const PAINT_TYPE_PENCIL_GRADIENT: u32 = 6;
 
 // See the layout information in `render.wesl`.
 pub(crate) const COLOR_SOURCE_SHIFT: u32 = 29;
@@ -126,6 +127,7 @@ impl<'a> PaintResolver<'a> {
                             EncodedKind::Linear(_) => PAINT_TYPE_LINEAR_GRADIENT,
                             EncodedKind::Radial(_) => PAINT_TYPE_RADIAL_GRADIENT,
                             EncodedKind::Sweep(_) => PAINT_TYPE_SWEEP_GRADIENT,
+                            EncodedKind::Pencil(_) => PAINT_TYPE_PENCIL_GRADIENT,
                         };
                         (paint_type, None)
                     }

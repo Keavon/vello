@@ -24,9 +24,10 @@ use crate::{
         Config,
         common::{
             DeviceLimits, GpuBlurredRoundedRect, GpuClearInstance, GpuEncodedImage,
-            GpuEncodedPaint, GpuLinearGradient, GpuRadialGradient, GpuSweepGradient,
-            ScratchBuffers, ScratchTexture, pack_image_offset, pack_image_params, pack_image_size,
-            pack_radial_kind_and_swapped, pack_texture_width_and_extend_mode, pack_tint,
+            GpuEncodedPaint, GpuLinearGradient, GpuPencilGradient, GpuRadialGradient,
+            GpuSweepGradient, ScratchBuffers, ScratchTexture, pack_image_offset, pack_image_params,
+            pack_image_size, pack_radial_kind_and_swapped, pack_texture_width_and_extend_mode,
+            pack_tint,
         },
     },
     scene::Scene,
@@ -844,6 +845,14 @@ impl Renderer {
                 inv_angle_delta: sweep.inv_angle_delta,
                 _padding: [0, 0],
             }),
+            EncodedKind::Pencil(geometry) => {
+                GpuEncodedPaint::PencilGradient(GpuPencilGradient::new(
+                    geometry,
+                    texture_width_and_extend_mode,
+                    gradient_start,
+                    transform,
+                ))
+            }
         }
     }
 
