@@ -3,7 +3,7 @@
 
 //! Shared encoded gradient accessors and gradient evaluation helpers.
 
-import package::helpers::extend::extend_mode_normalized;
+import package::helpers::extend::{EXTEND_PAD, extend_mode_normalized};
 import package::helpers::math::{NEARLY_ZERO_TOLERANCE, TWO_PI};
 import package::helpers::paint::{PAINT_TEXTURE_INDEX_MASK, load_encoded_paint_texel};
 import package::helpers::texture::flat_index_to_texture_coord;
@@ -53,13 +53,12 @@ fn sample_linear_gradient(
         );
 
     // For linear gradient, t-value is just the x coordinate in gradient space
-    let t_value = sample_xy.x + 0.00001;
-    let gradient_color = sample_gradient_lut(
+    let t_value = sample_xy.x;
+    let gradient_color = evaluate_gradient(
             gradient_texture,
             t_value,
             get_gradient_extend_mode(gradient_texel0),
             get_gradient_start(gradient_texel0),
-            get_gradient_texture_width(gradient_texel0),
         );
     return gradient_color;
 }
@@ -87,12 +86,11 @@ fn sample_radial_gradient(
 
     // For radial gradient, calculate distance from center
     let gradient_result = calculate_radial_gradient(sample_xy, gradient_texel2);
-    let gradient_color = sample_gradient_lut(
+    let gradient_color = evaluate_gradient(
             gradient_texture,
             gradient_result.x,
             get_gradient_extend_mode(gradient_texel0),
             get_gradient_start(gradient_texel0),
-            get_gradient_texture_width(gradient_texel0),
         );
     return select(vec4<f32>(0.0, 0.0, 0.0, 0.0), gradient_color, gradient_result.y != 0.0);
 }
@@ -136,12 +134,11 @@ fn sample_sweep_gradient(
     let angle = unit_angle * TWO_PI;
     let t_value = (angle - get_sweep_start_angle(gradient_texel2))
         * get_sweep_inv_angle_delta(gradient_texel2);
-    let gradient_color = sample_gradient_lut(
+    let gradient_color = evaluate_gradient(
             gradient_texture,
             t_value,
             get_gradient_extend_mode(gradient_texel0),
             get_gradient_start(gradient_texel0),
-            get_gradient_texture_width(gradient_texel0),
         );
     return gradient_color;
 }
@@ -151,26 +148,70 @@ const RADIAL_KIND_STRIP: u32 = 1u;
 const RADIAL_KIND_FOCAL_ON_CIRCLE: u32 = 2u;
 const RADIAL_KIND_FOCAL: u32 = 3u;
 
-// Sample from the gradient texture at calculated position.
-fn sample_gradient_lut(
+// Evaluate the gradient's color at `t_value` from the record of its stops at `gradient_start`.
+//
+// The record's first texel holds the stop count and whether the colors are premultiplied, then
+// come the offsets four to a texel, then one texel per color. Where several stops share an
+// offset, the last of them holds from that offset onward, and padding extends the first and last
+// stops' colors beyond the ends, as SVG and CSS specify.
+fn evaluate_gradient(
     gradient_texture: texture_2d<f32>,
     t_value: f32,
     extend_mode: u32,
     gradient_start: u32,
-    texture_width: u32,
 ) -> vec4<f32> {
-    // Apply extend mode to t_value
-    let clamped_t = extend_mode_normalized(t_value, extend_mode);
-    // Convert t_value to texture coordinate
-    let t_offset = u32(clamped_t * f32(texture_width - 1u));
-    // Calculate absolute position in flat gradient texture
-    let flat_coord = gradient_start + t_offset;
-    // Convert flat coordinate to 2D texture coordinate
     let gradient_tex_width = textureDimensions(gradient_texture).x;
-    let texture_coord = flat_index_to_texture_coord(flat_coord, gradient_tex_width);
-    // Sample from the gradient texture at calculated position
-    let gradient_color = textureLoad(gradient_texture, texture_coord, 0);
-    return gradient_color;
+    let header = textureLoad(gradient_texture, flat_index_to_texture_coord(gradient_start, gradient_tex_width), 0);
+    let stop_count = u32(header.x);
+    let premultiplied = header.y != 0.0;
+
+    // Padding needs no folding, since the search below extends the end stops itself
+    let t = select(extend_mode_normalized(t_value, extend_mode), t_value, extend_mode == EXTEND_PAD);
+
+    // Find the first stop past `t`, an upper bound in O(log n) texel reads
+    let offsets_start = gradient_start + 1u;
+    var low = 0u;
+    var high = stop_count;
+    while low < high {
+        let middle = (low + high) / 2u;
+        let offsets = textureLoad(gradient_texture, flat_index_to_texture_coord(offsets_start + middle / 4u, gradient_tex_width), 0);
+        if texel_component(offsets, middle % 4u) <= t {
+            low = middle + 1u;
+        } else {
+            high = middle;
+        }
+    }
+
+    let colors_start = offsets_start + (stop_count + 3u) / 4u;
+    let before = min(low, stop_count) - select(1u, 0u, low == 0u);
+    let after = min(low, stop_count - 1u);
+    let color_before = textureLoad(gradient_texture, flat_index_to_texture_coord(colors_start + before, gradient_tex_width), 0);
+    let color_after = textureLoad(gradient_texture, flat_index_to_texture_coord(colors_start + after, gradient_tex_width), 0);
+
+    // Interpolate between the stops around `t`, or hold an end stop's color beyond the ends
+    var color = color_before;
+    if before != after {
+        let offset_before = texel_component(textureLoad(gradient_texture, flat_index_to_texture_coord(offsets_start + before / 4u, gradient_tex_width), 0), before % 4u);
+        let offset_after = texel_component(textureLoad(gradient_texture, flat_index_to_texture_coord(offsets_start + after / 4u, gradient_tex_width), 0), after % 4u);
+        color = mix(color_before, color_after, (t - offset_before) / (offset_after - offset_before));
+    }
+
+    if !premultiplied {
+        color = vec4<f32>(color.rgb * color.a, color.a);
+    }
+
+    // Keep the color channels within the alpha, which interpolation can overshoot by rounding
+    let alpha = clamp(color.a, 0.0, 1.0);
+    return vec4<f32>(clamp(color.rgb, vec3(0.0), vec3(alpha)), alpha);
+}
+
+// One component of a texel, chosen without dynamic indexing, which older drivers mishandle.
+fn texel_component(texel: vec4<f32>, component: u32) -> f32 {
+    return select(
+        select(texel.x, texel.y, component == 1u),
+        select(texel.z, texel.w, component == 3u),
+        component >= 2u
+    );
 }
 
 /// Width of the gradient texture.

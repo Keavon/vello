@@ -191,6 +191,12 @@ impl EncodeExt for Gradient {
             self.hue_direction,
             self.interpolation_alpha_space,
         );
+        let exact_stops = encode_exact_stops(
+            &stops,
+            self.interpolation_cs,
+            self.hue_direction,
+            self.interpolation_alpha_space,
+        );
 
         // This represents the transform that needs to be applied to the starting point of a
         // command before starting with the rendering.
@@ -225,6 +231,9 @@ impl EncodeExt for Gradient {
             x_advance,
             y_advance,
             ranges,
+            exact_stops,
+            exact_stops_premultiplied: self.interpolation_alpha_space
+                == InterpolationAlphaSpace::Premultiplied,
             extend: self.extend,
             may_have_transparency,
             u8_lut: OnceCell::new(),
@@ -325,6 +334,71 @@ fn validate(gradient: &Gradient) -> Result<(), Paint> {
     }
 
     Ok(())
+}
+
+/// A color stop resolved for exact evaluation.
+///
+/// Between two stops the color interpolates linearly in sRGB. Where several stops share an
+/// offset, the last of them holds from that offset onward, and the gradient extends the first
+/// and last stops' colors beyond its ends, as SVG and CSS specify.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ExactStop {
+    /// The offset of the stop along the gradient.
+    pub offset: f32,
+    /// The sRGB color of the stop, premultiplied when the gradient interpolates premultiplied.
+    pub color: [f32; 4],
+}
+
+/// Resolve the stops for exact evaluation.
+///
+/// Interpolation in a color space other than sRGB is approximated by additional stops, as it
+/// is for the ranges of the lookup tables.
+fn encode_exact_stops(
+    stops: &[ColorStop],
+    cs: ColorSpaceTag,
+    hue_dir: HueDirection,
+    interpolation_alpha_space: InterpolationAlphaSpace,
+) -> Vec<ExactStop> {
+    let premultiplied = interpolation_alpha_space == InterpolationAlphaSpace::Premultiplied;
+    let resolve = |offset: f32, color: crate::color::AlphaColor<Srgb>| ExactStop {
+        offset,
+        color: if premultiplied {
+            color.premultiply().components
+        } else {
+            color.components
+        },
+    };
+
+    if cs == ColorSpaceTag::Srgb {
+        return stops
+            .iter()
+            .map(|stop| resolve(stop.offset, stop.color.to_alpha_color::<Srgb>()))
+            .collect();
+    }
+
+    let mut exact_stops = Vec::new();
+    for pair in stops.windows(2) {
+        let (left, right) = (&pair[0], &pair[1]);
+        let place = |t: f32| left.offset + (right.offset - left.offset) * t;
+
+        if premultiplied {
+            exact_stops.extend(
+                gradient::<Srgb>(left.color, right.color, cs, hue_dir, 0.01).map(|(t, color)| {
+                    ExactStop {
+                        offset: place(t),
+                        color: color.components,
+                    }
+                }),
+            );
+        } else {
+            exact_stops.extend(
+                gradient_unpremultiplied::<Srgb>(left.color, right.color, cs, hue_dir, 0.01)
+                    .map(|(t, color)| resolve(place(t), color)),
+            );
+        }
+    }
+
+    exact_stops
 }
 
 /// Encode all stops into a sequence of ranges.
@@ -816,6 +890,12 @@ pub struct EncodedGradient {
     pub y_advance: Vec2,
     /// The color ranges of the gradient.
     pub ranges: Vec<GradientRange>,
+    /// The stops in order of offset, for renderers that evaluate each pixel exactly rather
+    /// than sampling a lookup table.
+    pub exact_stops: Vec<ExactStop>,
+    /// Whether the colors of `exact_stops` are premultiplied, which is the alpha space the
+    /// gradient interpolates in.
+    pub exact_stops_premultiplied: bool,
     /// The extend of the gradient.
     pub extend: Extend,
     /// Whether the gradient requires `source_over` compositing.
