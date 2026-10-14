@@ -173,6 +173,30 @@ pub enum RenderError {
     /// An intermediate texture allocation failed.
     #[error(transparent)]
     IntermediateTexture(#[from] IntermediateTextureError),
+    /// A render needs more of one kind of data than its resource texture can hold. Rendering the
+    /// scene in smaller parts, each with less content, avoids it.
+    #[error(
+        "Render needs {required_height} rows of {resource:?} data, exceeding the maximum of {max_height}"
+    )]
+    ResourceTextureOverflow {
+        /// The resource texture that overflowed.
+        resource: ResourceTexture,
+        /// The rows the render needs.
+        required_height: u32,
+        /// The most rows the texture can have.
+        max_height: u32,
+    },
+}
+
+/// The textures holding per-render data, which grow with a scene's content.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResourceTexture {
+    /// The coverage of anti-aliased strip pixels.
+    Alphas,
+    /// The paints the scene draws with.
+    EncodedPaints,
+    /// The color stops of the gradients the scene draws with.
+    Gradients,
 }
 
 /// Errors that can occur while allocating intermediate textures.
