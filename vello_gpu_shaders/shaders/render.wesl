@@ -402,6 +402,10 @@ fn fs_main(
             // TODO: add a fast path for images where we are using bilinear sampling and want transparent pixels,
             // using GPU-native bilinear sampling
 
+            // The transform's columns are the texels the image steps across per pixel, which pick the mipmap level a minified image samples
+            let image_transform = get_image_transform(image_texel0, load_encoded_paint_texel(paint_tex_idx, 1u));
+            let texels_per_pixel = max(length(image_transform[0]), length(image_transform[1]));
+
             let final_xy = image_offset + extended_xy;
             let sample_color = sample_external_image(
                 external_texture_0,
@@ -409,6 +413,7 @@ fn fs_main(
                 final_xy,
                 image_offset,
                 image_size,
+                log2(max(texels_per_pixel, 1.0)),
             );
 
             final_color = alpha * select(

@@ -5,6 +5,7 @@
 
 import package::helpers::image::{
     IMAGE_QUALITY_HIGH,
+    IMAGE_QUALITY_LOW,
     IMAGE_QUALITY_MEDIUM,
     cubic_weights
 };
@@ -72,13 +73,55 @@ fn external_bicubic_sample(
     return vec4<f32>(clamp(result.rgb, vec3(0.0), vec3(a)), a);
 }
 
+// Bilinear sampling of one mipmap level, whose texels each average a block of 2^level texels of the full image along each side.
+// `coords` are in the full image's texels.
+fn external_mipmap_sample(
+    external_texture: texture_2d<f32>,
+    coords: vec2<f32>,
+    image_offset: vec2<f32>,
+    image_size: vec2<f32>,
+    level: u32,
+) -> vec4<f32> {
+    let scale = f32(1u << level);
+    // Each level halves the one before it, rounding down, as the texture's levels are sized
+    let level_size = max(floor(image_size / scale), vec2(1.0));
+    let level_offset = floor(image_offset / scale);
+    let level_max = level_offset + level_size - vec2(1.0);
+
+    let level_coords = (coords - image_offset) / scale + level_offset - vec2(0.5);
+    let clamped_coords = clamp(level_coords, level_offset, level_max);
+    let coord_quad = vec4(floor(clamped_coords), min(ceil(clamped_coords), level_max));
+    let coord_frac = fract(clamped_coords);
+    let a = textureLoad(external_texture, vec2<i32>(coord_quad.xy), i32(level));
+    let b = textureLoad(external_texture, vec2<i32>(coord_quad.xw), i32(level));
+    let c = textureLoad(external_texture, vec2<i32>(coord_quad.zy), i32(level));
+    let d = textureLoad(external_texture, vec2<i32>(coord_quad.zw), i32(level));
+    return mix(mix(a, b, coord_frac.y), mix(c, d, coord_frac.y), coord_frac.x);
+}
+
+// Samples an external image. `level` is the base 2 logarithm of the texels the image steps across per pixel. Above zero, the
+// smooth qualities blend the two nearest mipmap levels if the texture has them, so a minified image averages its texels
+// rather than skipping over them.
 fn sample_external_image(
     external_texture: texture_2d<f32>,
     quality: u32,
     coords: vec2<f32>,
     image_offset: vec2<f32>,
     image_size: vec2<f32>,
+    level: f32,
 ) -> vec4<f32> {
+    let last_level = f32(textureNumLevels(external_texture) - 1u);
+    if quality != IMAGE_QUALITY_LOW && level > 0.0 && last_level > 0.0 {
+        let clamped_level = min(level, last_level);
+        let lower_level = floor(clamped_level);
+        let lower = external_mipmap_sample(external_texture, coords, image_offset, image_size, u32(lower_level));
+        if clamped_level == lower_level {
+            return lower;
+        }
+        let upper = external_mipmap_sample(external_texture, coords, image_offset, image_size, u32(lower_level) + 1u);
+        return mix(lower, upper, clamped_level - lower_level);
+    }
+
     if quality == IMAGE_QUALITY_HIGH {
         return external_bicubic_sample(external_texture, coords, image_offset, image_size);
     }
