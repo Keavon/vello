@@ -9,8 +9,10 @@ const EXTEND_REFLECT: u32 = 2u;
 
 fn extend_mode(t: f32, mode: u32, max: f32) -> f32 {
     switch mode {
+        // Clamping to the edge texels' centers lets every sampling quality reach them, where clamping to the
+        // last texel's start would leave bilinear sampling halfway to its neighbor along the far edges
         case EXTEND_PAD: {
-            return clamp(t, 0.0, max - 1.0);
+            return clamp(t, 0.5, max - 0.5);
         }
         case EXTEND_REPEAT: {
             return extend_mode_normalized(t / max, mode) * max;
