@@ -395,6 +395,10 @@ fn fs_main(
     @location(5) rect_frac: u32,
     @builtin(position) position: vec4<f32>,
 ) -> @location(0) vec4<f32> {
+    // Derivatives are only defined before any branching, so they're taken here for native images to choose their mipmap levels by
+    let sample_xy_dx = dpdx(sample_xy);
+    let sample_xy_dy = dpdy(sample_xy);
+
     var alpha = 1.0;
     let is_rect = (paint_and_rect_flag & RECT_STRIP_FLAG) != 0u;
     if is_rect && rect_frac != 0u {
@@ -417,6 +421,8 @@ fn fs_main(
                         external_sampler_0,
                         payload,
                         sample_xy,
+                        sample_xy_dx,
+                        sample_xy_dy,
                     );
             }
             @if(texture_external)

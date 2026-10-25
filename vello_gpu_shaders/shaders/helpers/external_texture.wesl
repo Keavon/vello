@@ -20,14 +20,24 @@ import package::helpers::image::cubic_weights;
 @if(full_image_support)
 import package::helpers::paint::{PAINT_TEXTURE_INDEX_MASK, load_encoded_paint_texel};
 
+// `sample_xy_dx` and `sample_xy_dy` are the screen-space derivatives of `sample_xy`, which choose the
+// mipmap levels a minified image samples when its texture and sampler have them.
 fn sample_native_image_paint(
     external_texture: texture_2d<f32>,
     external_sampler: sampler,
     opacity: u32,
     sample_xy: vec2<f32>,
+    sample_xy_dx: vec2<f32>,
+    sample_xy_dy: vec2<f32>,
 ) -> vec4<f32> {
     let image_opacity = f32(opacity & 0xffu) * (1.0 / 255.0);
-    return image_opacity * textureSampleLevel(external_texture, external_sampler, sample_xy, 0.0);
+    return image_opacity * textureSampleGrad(
+            external_texture,
+            external_sampler,
+            sample_xy,
+            sample_xy_dx,
+            sample_xy_dy,
+        );
 }
 
 /// Sample a full `wgpu::ExternalTexture` with pad extend.

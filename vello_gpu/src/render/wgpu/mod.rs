@@ -2187,9 +2187,19 @@ impl Programs {
             SamplerAddress::Repeat => wgpu::AddressMode::Repeat,
             SamplerAddress::Reflect => wgpu::AddressMode::MirrorRepeat,
         };
-        let filter = match key.filter {
-            SamplerFilter::Nearest => wgpu::FilterMode::Nearest,
-            SamplerFilter::Linear => wgpu::FilterMode::Linear,
+        // Linear filtering blends a minified texture's two nearest mipmap levels, while nearest
+        // filtering keeps to its full-resolution texels
+        let (filter, mipmap_filter, lod_max_clamp) = match key.filter {
+            SamplerFilter::Nearest => (
+                wgpu::FilterMode::Nearest,
+                wgpu::MipmapFilterMode::Nearest,
+                0.0,
+            ),
+            SamplerFilter::Linear => (
+                wgpu::FilterMode::Linear,
+                wgpu::MipmapFilterMode::Linear,
+                32.0,
+            ),
         };
         device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("External Texture Sampler"),
@@ -2197,6 +2207,8 @@ impl Programs {
             address_mode_v: address_mode(key.address_y),
             mag_filter: filter,
             min_filter: filter,
+            mipmap_filter,
+            lod_max_clamp,
             ..Default::default()
         })
     }
